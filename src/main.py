@@ -116,17 +116,30 @@ def homography_sift(img, k1, d1):
             for m in good
         ]).reshape(-1, 1, 2)
 
-        H, mask = cv.findHomography(dst_pts, src_pts, cv.RANSAC, 5.0)
-        
+        # RANSACパラメータを最適化（より厳格な外れ値除去）
+        H, mask = cv.findHomography(
+            dst_pts, src_pts,
+            method=cv.RANSAC,
+            ransacReprojThreshold=3.0,  # 5.0→3.0: より厳格な閾値
+            maxIters=5000,              # デフォルト2000→5000: より徹底的な探索
+            confidence=0.995            # デフォルト0.99→0.995: より高い信頼度
+        )
+
         if H is None:
             write_log("[DEBUG] findHomography returned None.")
             return None
-            
-        # インライア数をログ出力
+
+        # インライア数とインライア率をログ出力し、品質チェック
         if mask is not None:
             inliers = np.sum(mask)
-            write_log(f"[DEBUG] RANSAC inliers: {inliers}/{len(good)}")
-        
+            inlier_ratio = inliers / len(good)
+            write_log(f"[DEBUG] RANSAC inliers: {inliers}/{len(good)} ({inlier_ratio:.1%})")
+
+            # インライア率が20%未満の場合は拒否
+            if inlier_ratio < 0.20:
+                write_log(f"[WARNING] Low inlier ratio {inlier_ratio:.1%}, rejecting homography")
+                return None
+
         return H
 
     except cv.error as e:
@@ -135,6 +148,46 @@ def homography_sift(img, k1, d1):
     except Exception as e:
         write_log(f"[ERROR] Unexpected error in homography_sift: {e}")
         return None
+
+
+def validate_homography(H):
+    """
+    ホモグラフィ行列の妥当性を検証する。
+
+    検証項目:
+    1. 条件数（Condition Number）: 行列の数値安定性
+    2. 行列式（Determinant）: スケール変換の妥当性
+    3. 射影成分（h31, h32）: 極端な遠近法歪みの検出
+
+    Returns:
+        bool: ホモグラフィが妥当な場合True、そうでない場合False
+    """
+    if H is None:
+        return False
+
+    try:
+        # 1. 条件数チェック（左上2x2の回転・スケール行列）
+        cond = np.linalg.cond(H[:2, :2])
+        if cond > 10.0:
+            write_log(f"[WARNING] High condition number: {cond:.2f}, matrix is ill-conditioned")
+            return False
+
+        # 2. 行列式チェック（スケール変換の妥当性）
+        det = np.linalg.det(H)
+        if det < 0.01 or det > 100.0:
+            write_log(f"[WARNING] Abnormal determinant: {det:.4f}, extreme scaling detected")
+            return False
+
+        # 3. 射影成分チェック（平面変換の仮定）
+        if abs(H[2, 0]) > 0.01 or abs(H[2, 1]) > 0.01:
+            write_log(f"[WARNING] Large perspective components: h31={H[2, 0]:.4f}, h32={H[2, 1]:.4f}")
+            return False
+
+        return True
+
+    except Exception as e:
+        write_log(f"[ERROR] Error validating homography: {e}")
+        return False
 
 
 def warp_and_blend(canvas, img, H, strength):
@@ -290,6 +343,12 @@ def main():
         # d. (推定失敗)
         if H is None:
             write_log(f"[skip] {filename} : homography failed")
+            skip_count += 1
+            continue
+
+        # e. (ホモグラフィ妥当性検証)
+        if not validate_homography(H):
+            write_log(f"[skip] {filename} : invalid homography matrix")
             skip_count += 1
             continue
 
