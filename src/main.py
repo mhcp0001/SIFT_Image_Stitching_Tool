@@ -19,7 +19,15 @@ SIFT_RATIO_TEST = 0.75
 
 # --- グローバル変数 ---
 log_f = None
-sift = cv.SIFT_create()
+# SIFT detectorの初期化（OpenCVのバージョンによって異なる場合に対応）
+try:
+    sift = cv.SIFT_create()
+except AttributeError:
+    try:
+        sift = cv.xfeatures2d.SIFT_create()
+    except AttributeError:
+        print("[CRITICAL ERROR] SIFT is not available in your OpenCV installation. Please install opencv-contrib-python.")
+        sys.exit(1)
 
 
 # --- 5. 関数シグネチャ (ロギング) ---
