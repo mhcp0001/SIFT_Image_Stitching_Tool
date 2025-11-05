@@ -12,7 +12,7 @@ OUT = "stitched.png"
 LOG_FILE = "stitch.log"
 
 # --- 3. 処理パラメータ (固定値) ---
-CANVAS_SCALE = 3
+CANVAS_SCALE = 2
 STRENGTH = 31  # ブレンディング強度 (奇数)
 SIFT_MIN_MATCHES = 12
 SIFT_RATIO_TEST = 0.75
@@ -21,7 +21,11 @@ SIFT_RATIO_TEST = 0.75
 log_f = None
 # SIFT detectorの初期化（OpenCVのバージョンによって異なる場合に対応）
 try:
-    sift = cv.SIFT_create()
+    sift = cv.SIFT_create(
+        nOctaveLayers=5,      # デフォルト3→5: より多くのスケールで検出
+        contrastThreshold=0.03,  # デフォルト0.04→0.03: より多くの特徴点
+        edgeThreshold=15      # デフォルト10→15: エッジ応答の閾値を緩和
+        )
 except AttributeError:
     try:
         sift = cv.xfeatures2d.SIFT_create()
@@ -135,8 +139,8 @@ def homography_sift(img, k1, d1):
             inlier_ratio = inliers / len(good)
             write_log(f"[DEBUG] RANSAC inliers: {inliers}/{len(good)} ({inlier_ratio:.1%})")
 
-            # インライア率が20%未満の場合は拒否
-            if inlier_ratio < 0.20:
+            # インライア率が10%未満の場合は拒否
+            if inlier_ratio < 0.1:
                 write_log(f"[WARNING] Low inlier ratio {inlier_ratio:.1%}, rejecting homography")
                 return None
 
