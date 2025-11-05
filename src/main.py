@@ -52,7 +52,7 @@ def setup_logging():
 
 def write_log(message: str):
     """
-    メッセージをコンソール（print）とログファイルの両方に書き出す。
+    メッセージをコンソール(print)とログファイルの両方に書き出す。
     """
     print(message)
     if log_f:
@@ -78,7 +78,7 @@ def homography_sift(img, k1, d1):
         k2, d2 = sift.detectAndCompute(img_gray, None)
 
         if d2 is None or len(d2) < SIFT_MIN_MATCHES:
-            write_log("[DEBUG] Not enough features found in closeup image.")
+            write_log(f"[DEBUG] Not enough features found in closeup image. Found: {len(d2) if d2 is not None else 0}")
             return None
 
         # BFMatcher (Brute-Force Matcher)
@@ -103,6 +103,8 @@ def homography_sift(img, k1, d1):
             write_log(msg)
             return None
 
+        write_log(f"[DEBUG] Found {len(good)} good matches.")
+
         # ホモグラフィを計算
         src_pts = np.float32([
             k1[m.queryIdx].pt
@@ -114,7 +116,17 @@ def homography_sift(img, k1, d1):
             for m in good
         ]).reshape(-1, 1, 2)
 
-        H, _mask = cv.findHomography(dst_pts, src_pts, cv.RANSAC, 5.0)
+        H, mask = cv.findHomography(dst_pts, src_pts, cv.RANSAC, 5.0)
+        
+        if H is None:
+            write_log("[DEBUG] findHomography returned None.")
+            return None
+            
+        # インライア数をログ出力
+        if mask is not None:
+            inliers = np.sum(mask)
+            write_log(f"[DEBUG] RANSAC inliers: {inliers}/{len(good)}")
+        
         return H
 
     except cv.error as e:
@@ -128,7 +140,7 @@ def homography_sift(img, k1, d1):
 def warp_and_blend(canvas, img, H, strength):
     """
     img を H に従ってワープし、ガウシアンブラーマスクを使用して canvas にブレンディングする。
-    canvas はインプレース（参照渡し）で更新される。
+    canvas はインプレース(参照渡し)で更新される。
     """
     h_canvas, w_canvas = canvas.shape[:2]
     h_img, w_img = img.shape[:2]
@@ -261,10 +273,10 @@ def main():
     for path in sorted(closeups_paths):
         filename = os.path.basename(path)
 
-        # a. （読み込み）
+        # a. (読み込み)
         img = cv.imread(path)
 
-        # b. （読み込み失敗）
+        # b. (読み込み失敗)
         if img is None:
             write_log(f"[skip] {filename} : Cannot read image")
             skip_count += 1
@@ -272,16 +284,16 @@ def main():
 
         write_log(f"[INFO] Processing: {filename}")
 
-        # c. （SIFT推定） k1, d1 を渡す
+        # c. (SIFT推定) k1, d1 を渡す
         H = homography_sift(img, k1, d1)
 
-        # d. （推定失敗）
+        # d. (推定失敗)
         if H is None:
             write_log(f"[skip] {filename} : homography failed")
             skip_count += 1
             continue
 
-        # e. （合成処理）
+        # e. (合成処理)
         try:
             # i. キャンバス座標系への変換行列
             H_to_canvas = Hscale @ H
