@@ -4,6 +4,8 @@ import glob
 import sys
 from datetime import datetime
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 # --- 2. ファイルI/Oとパス (固定値) ---
 OVERVIEW = "overview.jpg"
@@ -17,21 +19,44 @@ STRENGTH = 31  # ブレンディング強度 (奇数)
 SIFT_MIN_MATCHES = 12
 SIFT_RATIO_TEST = 0.75
 
+# --- 高速化パラメータ ---
+USE_FLANN = True  # FLANNマッチャーを使用（BFMatcherより高速）
+MAX_FEATURES = 5000  # SIFT特徴点の上限（メモリと速度の最適化）
+DOWNSAMPLE_FOR_MATCHING = True  # マッチング用にダウンサンプリング
+DOWNSAMPLE_SCALE = 0.5  # マッチング時のダウンサンプリング倍率
+USE_PARALLEL = True  # 並列処理を使用
+MAX_WORKERS = None  # 並列処理のワーカー数（Noneで自動：CPU数）
+
+# OpenCV最適化設定
+cv.setNumThreads(multiprocessing.cpu_count())  # OpenCVのマルチスレッド有効化
+
 # --- グローバル変数 ---
 log_f = None
+
 # SIFT detectorの初期化（OpenCVのバージョンによって異なる場合に対応）
 try:
     sift = cv.SIFT_create(
-        nOctaveLayers=5,      # デフォルト3→5: より多くのスケールで検出
-        contrastThreshold=0.03,  # デフォルト0.04→0.03: より多くの特徴点
-        edgeThreshold=15      # デフォルト10→15: エッジ応答の閾値を緩和
-        )
+        nfeatures=MAX_FEATURES,      # 特徴点数の上限を設定
+        nOctaveLayers=5,              # デフォルト3→5: より多くのスケールで検出
+        contrastThreshold=0.03,       # デフォルト0.04→0.03: より多くの特徴点
+        edgeThreshold=15              # デフォルト10→15: エッジ応答の閾値を緩和
+    )
 except AttributeError:
     try:
-        sift = cv.xfeatures2d.SIFT_create()
+        sift = cv.xfeatures2d.SIFT_create(nfeatures=MAX_FEATURES)
     except AttributeError:
         print("[CRITICAL ERROR] SIFT is not available in your OpenCV installation. Please install opencv-contrib-python.")
         sys.exit(1)
+
+# FLANNマッチャーの初期化
+if USE_FLANN:
+    # FLANN parameters for SIFT
+    FLANN_INDEX_KDTREE = 1
+    index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+    search_params = dict(checks=50)  # より高い値で精度向上、低い値で速度向上
+    flann = cv.FlannBasedMatcher(index_params, search_params)
+else:
+    flann = None
 
 
 # --- 5. 関数シグネチャ (ロギング) ---
@@ -45,9 +70,12 @@ def setup_logging():
         # 追記モード (a) でファイルを開く
         log_f = open(LOG_FILE, "a", encoding="utf-8")
 
-        # [起動] ログ初期化 (質問2=B案)
+        # [起動] ログ初期化
         start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         write_log(f"{start_time} --- Processing Start ---")
+        write_log(f"[CONFIG] USE_FLANN={USE_FLANN}, MAX_FEATURES={MAX_FEATURES}, "
+                  f"DOWNSAMPLE_FOR_MATCHING={DOWNSAMPLE_FOR_MATCHING}, "
+                  f"USE_PARALLEL={USE_PARALLEL}, MAX_WORKERS={MAX_WORKERS or 'auto'}")
 
     except IOError as e:
         print(f"[CRITICAL ERROR] Failed to open log file: {LOG_FILE}. {e}")
@@ -70,13 +98,44 @@ def write_log(message: str):
 # --- 5. 関数シグネチャ (コアロジック) ---
 
 
-def homography_sift(img, k1, d1):
+def downsample_for_matching(img, scale=0.5):
+    """
+    マッチング用に画像をダウンサンプリングする（高速化）。
+
+    Args:
+        img: 入力画像
+        scale: ダウンサンプリング倍率（デフォルト0.5 = 半分）
+
+    Returns:
+        ダウンサンプリングされた画像、スケール倍率
+    """
+    if scale >= 1.0 or not DOWNSAMPLE_FOR_MATCHING:
+        return img, 1.0
+
+    h, w = img.shape[:2]
+    new_h, new_w = int(h * scale), int(w * scale)
+    downsampled = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+    return downsampled, scale
+
+
+def homography_sift(img, k1, d1, scale1=1.0):
     """
     SIFT特徴量に基づき、base (k1, d1) から img へのホモグラフィを計算する。
     k1, d1 はループ外で計算済みのものを利用する。
+
+    Args:
+        img: クローズアップ画像
+        k1: ベース画像のキーポイント
+        d1: ベース画像のディスクリプタ
+        scale1: ベース画像のダウンサンプリング倍率
+
+    Returns:
+        ホモグラフィ行列（オリジナルスケール）またはNone
     """
     try:
-        img_gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+        # マッチング用にダウンサンプリング
+        img_for_match, scale2 = downsample_for_matching(img, DOWNSAMPLE_SCALE)
+        img_gray = cv.cvtColor(img_for_match, cv.COLOR_BGR2GRAY)
 
         # imgの特徴量を計算
         k2, d2 = sift.detectAndCompute(img_gray, None)
@@ -85,9 +144,14 @@ def homography_sift(img, k1, d1):
             write_log(f"[DEBUG] Not enough features found in closeup image. Found: {len(d2) if d2 is not None else 0}")
             return None
 
-        # BFMatcher (Brute-Force Matcher)
-        bf = cv.BFMatcher()
-        matches = bf.knnMatch(d1, d2, k=2)
+        # マッチング（FLANN または BFMatcher）
+        if USE_FLANN and flann is not None:
+            # FLANNマッチャー（高速）
+            matches = flann.knnMatch(d1, d2, k=2)
+        else:
+            # BFMatcher（従来の方法）
+            bf = cv.BFMatcher()
+            matches = bf.knnMatch(d1, d2, k=2)
 
         # Lowe's ratio test
         good = []
@@ -109,14 +173,14 @@ def homography_sift(img, k1, d1):
 
         write_log(f"[DEBUG] Found {len(good)} good matches.")
 
-        # ホモグラフィを計算
+        # ダウンサンプリングを考慮してキーポイント座標をスケーリング
         src_pts = np.float32([
-            k1[m.queryIdx].pt
+            [k1[m.queryIdx].pt[0] / scale1, k1[m.queryIdx].pt[1] / scale1]
             for m in good
         ]).reshape(-1, 1, 2)
 
         dst_pts = np.float32([
-            k2[m.trainIdx].pt
+            [k2[m.trainIdx].pt[0] / scale2, k2[m.trainIdx].pt[1] / scale2]
             for m in good
         ]).reshape(-1, 1, 2)
 
@@ -245,6 +309,50 @@ def warp_and_blend(canvas, img, H, strength):
         write_log(f"[ERROR] Unexpected error in warp_and_blend: {e}")
 
 
+def process_single_closeup(path, k1, d1, scale1, Hscale):
+    """
+    単一のクローズアップ画像を処理する（並列処理用）。
+
+    Args:
+        path: 画像ファイルパス
+        k1: ベース画像のキーポイント
+        d1: ベース画像のディスクリプタ
+        scale1: ベース画像のダウンサンプリング倍率
+        Hscale: スケーリング行列
+
+    Returns:
+        (filename, status, H_to_canvas, img) または (filename, 'skip', None, None)
+    """
+    filename = os.path.basename(path)
+
+    try:
+        # a. (読み込み)
+        img = cv.imread(path)
+
+        # b. (読み込み失敗)
+        if img is None:
+            return (filename, 'skip', None, None, "Cannot read image")
+
+        # c. (SIFT推定)
+        H = homography_sift(img, k1, d1, scale1)
+
+        # d. (推定失敗)
+        if H is None:
+            return (filename, 'skip', None, None, "homography failed")
+
+        # e. (ホモグラフィ妥当性検証)
+        if not validate_homography(H):
+            return (filename, 'skip', None, None, "invalid homography matrix")
+
+        # キャンバス座標系への変換行列
+        H_to_canvas = Hscale @ H
+
+        return (filename, 'success', H_to_canvas, img, None)
+
+    except Exception as e:
+        return (filename, 'skip', None, None, f"Error: {e}")
+
+
 # --- 4. 実行フロー ---
 
 
@@ -300,9 +408,12 @@ def main():
         f"Dimensions: {canvas.shape[1]}x{canvas.shape[0]}"
     )
 
-    # 2. リサイズ前の base 画像（グレースケール）からSIFT特徴量（k1, d1）を計算
+    # 2. マッチング用にベース画像をダウンサンプリング
+    base_for_match, scale1 = downsample_for_matching(base, DOWNSAMPLE_SCALE)
+
+    # 3. ダウンサンプリングされたbase画像（グレースケール）からSIFT特徴量（k1, d1）を計算
     try:
-        base_gray = cv.cvtColor(base, cv.COLOR_BGR2GRAY)
+        base_gray = cv.cvtColor(base_for_match, cv.COLOR_BGR2GRAY)
         k1, d1 = sift.detectAndCompute(base_gray, None)
         if d1 is None or len(k1) == 0:
             write_log(
@@ -310,67 +421,74 @@ def main():
                 "from overview image."
             )
             sys.exit(1)
+        write_log(f"[INFO] Computed {len(k1)} SIFT features from overview image (scale={scale1:.2f})")
     except cv.error as e:
         write_log(f"[ERROR] Failed to compute SIFT on base image: {e}")
         sys.exit(1)
 
-    # 3. スケーリング行列の準備 (base座標系 -> canvas座標系)
+    # 4. スケーリング行列の準備 (base座標系 -> canvas座標系)
     Hscale = np.array([
         [CANVAS_SCALE, 0, 0],
         [0, CANVAS_SCALE, 0],
         [0, 0, 1]
     ], dtype=np.float32)
 
-    # 4. カウンター変数初期化
+    # 5. カウンター変数初期化
     success_count = 0
     skip_count = 0
 
-    # [メイン処理] 合成ループ
+    # [メイン処理] 合成ループ（並列処理版）
     # ファイル名順 (sorted) でループ
-    for path in sorted(closeups_paths):
-        filename = os.path.basename(path)
+    sorted_paths = sorted(closeups_paths)
 
-        # a. (読み込み)
-        img = cv.imread(path)
+    if USE_PARALLEL:
+        # 並列処理版
+        write_log(f"[INFO] Using parallel processing with {MAX_WORKERS or multiprocessing.cpu_count()} workers")
 
-        # b. (読み込み失敗)
-        if img is None:
-            write_log(f"[skip] {filename} : Cannot read image")
-            skip_count += 1
-            continue
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # すべてのタスクを投入
+            future_to_path = {
+                executor.submit(process_single_closeup, path, k1, d1, scale1, Hscale): path
+                for path in sorted_paths
+            }
 
-        write_log(f"[INFO] Processing: {filename}")
+            # 完了したものから順次処理
+            for future in as_completed(future_to_path):
+                try:
+                    filename, status, H_to_canvas, img, error_msg = future.result()
 
-        # c. (SIFT推定) k1, d1 を渡す
-        H = homography_sift(img, k1, d1)
+                    if status == 'skip':
+                        write_log(f"[skip] {filename} : {error_msg}")
+                        skip_count += 1
+                    else:
+                        # 合成処理（メインスレッドで実行：canvasへの書き込みは非スレッドセーフ）
+                        write_log(f"[INFO] Processing: {filename}")
+                        warp_and_blend(canvas, img, H_to_canvas, strength=STRENGTH)
+                        write_log(f"[blend] {filename}")
+                        success_count += 1
 
-        # d. (推定失敗)
-        if H is None:
-            write_log(f"[skip] {filename} : homography failed")
-            skip_count += 1
-            continue
+                except Exception as e:
+                    path = future_to_path[future]
+                    filename = os.path.basename(path)
+                    write_log(f"[skip] {filename} : Exception in processing: {e}")
+                    skip_count += 1
+    else:
+        # 順次処理版（従来の方法）
+        write_log(f"[INFO] Using sequential processing")
 
-        # e. (ホモグラフィ妥当性検証)
-        if not validate_homography(H):
-            write_log(f"[skip] {filename} : invalid homography matrix")
-            skip_count += 1
-            continue
+        for path in sorted_paths:
+            filename, status, H_to_canvas, img, error_msg = process_single_closeup(
+                path, k1, d1, scale1, Hscale
+            )
 
-        # e. (合成処理)
-        try:
-            # i. キャンバス座標系への変換行列
-            H_to_canvas = Hscale @ H
-
-            # ii. warp_and_blend (canvas を直接更新)
-            warp_and_blend(canvas, img, H_to_canvas, strength=STRENGTH)
-
-            # iii. ログに [blend] を記録
-            write_log(f"[blend] {filename}")
-            success_count += 1
-
-        except Exception as e:
-            write_log(f"[skip] {filename} : Error during warp/blend: {e}")
-            skip_count += 1
+            if status == 'skip':
+                write_log(f"[skip] {filename} : {error_msg}")
+                skip_count += 1
+            else:
+                write_log(f"[INFO] Processing: {filename}")
+                warp_and_blend(canvas, img, H_to_canvas, strength=STRENGTH)
+                write_log(f"[blend] {filename}")
+                success_count += 1
 
     # [終了処理 1] 結果保存
     try:

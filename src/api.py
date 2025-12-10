@@ -15,10 +15,23 @@ from datetime import datetime
 import cv2 as cv
 import numpy as np
 import glob
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 # Import existing SIFT logic
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
+
+# --- 高速化パラメータ ---
+USE_FLANN = True  # FLANNマッチャーを使用（BFMatcherより高速）
+MAX_FEATURES = 5000  # SIFT特徴点の上限（メモリと速度の最適化）
+DOWNSAMPLE_FOR_MATCHING = True  # マッチング用にダウンサンプリング
+DOWNSAMPLE_SCALE = 0.5  # マッチング時のダウンサンプリング倍率
+USE_PARALLEL = True  # 並列処理を使用
+MAX_WORKERS = None  # 並列処理のワーカー数（Noneで自動：CPU数）
+
+# OpenCV最適化設定
+cv.setNumThreads(multiprocessing.cpu_count())  # OpenCVのマルチスレッド有効化
 
 # --- Configuration ---
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '..', 'uploads')
@@ -43,21 +56,52 @@ processing_jobs = {}
 # SIFT detector initialization
 try:
     sift = cv.SIFT_create(
+        nfeatures=MAX_FEATURES,      # 特徴点数の上限を設定
         nOctaveLayers=5,
         contrastThreshold=0.03,
         edgeThreshold=15
     )
 except AttributeError:
     try:
-        sift = cv.xfeatures2d.SIFT_create()
+        sift = cv.xfeatures2d.SIFT_create(nfeatures=MAX_FEATURES)
     except AttributeError:
         print("[CRITICAL ERROR] SIFT is not available")
         sys.exit(1)
+
+# FLANNマッチャーの初期化
+if USE_FLANN:
+    # FLANN parameters for SIFT
+    FLANN_INDEX_KDTREE = 1
+    index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+    search_params = dict(checks=50)  # より高い値で精度向上、低い値で速度向上
+    flann = cv.FlannBasedMatcher(index_params, search_params)
+else:
+    flann = None
 
 
 def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def downsample_for_matching(img, scale=0.5):
+    """
+    マッチング用に画像をダウンサンプリングする（高速化）。
+
+    Args:
+        img: 入力画像
+        scale: ダウンサンプリング倍率（デフォルト0.5 = 半分）
+
+    Returns:
+        ダウンサンプリングされた画像、スケール倍率
+    """
+    if scale >= 1.0 or not DOWNSAMPLE_FOR_MATCHING:
+        return img, 1.0
+
+    h, w = img.shape[:2]
+    new_h, new_w = int(h * scale), int(w * scale)
+    downsampled = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+    return downsampled, scale
 
 
 def log_message(job_id, message):
@@ -69,7 +113,7 @@ def log_message(job_id, message):
         })
 
 
-def homography_sift(img, k1, d1, job_id=None, params=None):
+def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
     """
     Compute homography using SIFT features
     """
@@ -81,7 +125,9 @@ def homography_sift(img, k1, d1, job_id=None, params=None):
         }
 
     try:
-        img_gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+        # マッチング用にダウンサンプリング
+        img_for_match, scale2 = downsample_for_matching(img, DOWNSAMPLE_SCALE)
+        img_gray = cv.cvtColor(img_for_match, cv.COLOR_BGR2GRAY)
         k2, d2 = sift.detectAndCompute(img_gray, None)
 
         if d2 is None or len(d2) < params['min_matches']:
@@ -89,8 +135,14 @@ def homography_sift(img, k1, d1, job_id=None, params=None):
                 log_message(job_id, f"Not enough features: {len(d2) if d2 is not None else 0}")
             return None
 
-        bf = cv.BFMatcher()
-        matches = bf.knnMatch(d1, d2, k=2)
+        # マッチング（FLANN または BFMatcher）
+        if USE_FLANN and flann is not None:
+            # FLANNマッチャー（高速）
+            matches = flann.knnMatch(d1, d2, k=2)
+        else:
+            # BFMatcher（従来の方法）
+            bf = cv.BFMatcher()
+            matches = bf.knnMatch(d1, d2, k=2)
 
         good = []
         for m_n in matches:
@@ -107,8 +159,16 @@ def homography_sift(img, k1, d1, job_id=None, params=None):
         if job_id:
             log_message(job_id, f"Found {len(good)} good matches")
 
-        src_pts = np.float32([k1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-        dst_pts = np.float32([k2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        # ダウンサンプリングを考慮してキーポイント座標をスケーリング
+        src_pts = np.float32([
+            [k1[m.queryIdx].pt[0] / scale1, k1[m.queryIdx].pt[1] / scale1]
+            for m in good
+        ]).reshape(-1, 1, 2)
+
+        dst_pts = np.float32([
+            [k2[m.trainIdx].pt[0] / scale2, k2[m.trainIdx].pt[1] / scale2]
+            for m in good
+        ]).reshape(-1, 1, 2)
 
         H, mask = cv.findHomography(
             dst_pts, src_pts,
