@@ -30,6 +30,19 @@ const strengthValue = document.getElementById('strength-value');
 const siftMatches = document.getElementById('sift-matches');
 const siftMatchesValue = document.getElementById('sift-matches-value');
 
+const advancedToggle = document.getElementById('advanced-toggle');
+const advancedIcon = document.getElementById('advanced-icon');
+const advancedParams = document.getElementById('advanced-params');
+const useFlann = document.getElementById('use-flann');
+const maxFeatures = document.getElementById('max-features');
+const maxFeaturesValue = document.getElementById('max-features-value');
+const downsampleMatching = document.getElementById('downsample-matching');
+const downsampleScale = document.getElementById('downsample-scale');
+const downsampleScaleValue = document.getElementById('downsample-scale-value');
+const useParallel = document.getElementById('use-parallel');
+const maxWorkers = document.getElementById('max-workers');
+const maxWorkersValue = document.getElementById('max-workers-value');
+
 const startBtn = document.getElementById('start-btn');
 const cancelBtn = document.getElementById('cancel-btn');
 const progressPanel = document.getElementById('progress-panel');
@@ -315,7 +328,14 @@ async function processStitching() {
             strength: parseInt(strength.value),
             sift_min_matches: parseInt(siftMatches.value),
             sift_ratio_test: 0.75,
-            ransac_threshold: 3.0
+            ransac_threshold: 3.0,
+            // Advanced parameters
+            use_flann: useFlann.checked,
+            max_features: parseInt(maxFeatures.value),
+            downsample_matching: downsampleMatching.checked,
+            downsample_scale: parseFloat(downsampleScale.value),
+            use_parallel: useParallel.checked,
+            max_workers: maxWorkers.value ? parseInt(maxWorkers.value) : null
         };
 
         addLog('処理を開始します...');
@@ -357,6 +377,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     siftMatches.addEventListener('input', (e) => {
         siftMatchesValue.textContent = e.target.value;
+    });
+
+    // Advanced Parameters Toggle
+    advancedToggle.addEventListener('click', () => {
+        advancedParams.classList.toggle('hidden');
+        advancedIcon.classList.toggle('rotate-180');
+    });
+
+    // Advanced Parameter Controls
+    maxFeatures.addEventListener('input', (e) => {
+        maxFeaturesValue.textContent = e.target.value;
+    });
+
+    downsampleScale.addEventListener('input', (e) => {
+        downsampleScaleValue.textContent = e.target.value;
+    });
+
+    maxWorkers.addEventListener('input', (e) => {
+        maxWorkersValue.textContent = e.target.value || 'auto';
     });
 
     // Start Button

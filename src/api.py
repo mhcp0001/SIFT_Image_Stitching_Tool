@@ -121,14 +121,33 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
         params = {
             'min_matches': 12,
             'ratio_test': 0.75,
-            'ransac_threshold': 3.0
+            'ransac_threshold': 3.0,
+            'downsample_matching': True,
+            'downsample_scale': 0.5,
+            'sift_detector': sift,
+            'matcher': None
         }
 
     try:
+        # Extract parameters
+        downsample_matching = params.get('downsample_matching', True)
+        downsample_scale_val = params.get('downsample_scale', 0.5)
+        sift_detector = params.get('sift_detector', sift)
+        matcher = params.get('matcher', None)
+
         # マッチング用にダウンサンプリング
-        img_for_match, scale2 = downsample_for_matching(img, DOWNSAMPLE_SCALE)
+        if downsample_matching and downsample_scale_val < 1.0:
+            h, w = img.shape[:2]
+            new_w = int(w * downsample_scale_val)
+            new_h = int(h * downsample_scale_val)
+            img_for_match = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+            scale2 = downsample_scale_val
+        else:
+            img_for_match = img
+            scale2 = 1.0
+
         img_gray = cv.cvtColor(img_for_match, cv.COLOR_BGR2GRAY)
-        k2, d2 = sift.detectAndCompute(img_gray, None)
+        k2, d2 = sift_detector.detectAndCompute(img_gray, None)
 
         if d2 is None or len(d2) < params['min_matches']:
             if job_id:
@@ -136,11 +155,10 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
             return None
 
         # マッチング（FLANN または BFMatcher）
-        if USE_FLANN and flann is not None:
-            # FLANNマッチャー（高速）
-            matches = flann.knnMatch(d1, d2, k=2)
+        if matcher is not None:
+            matches = matcher.knnMatch(d1, d2, k=2)
         else:
-            # BFMatcher（従来の方法）
+            # Fallback to BFMatcher
             bf = cv.BFMatcher()
             matches = bf.knnMatch(d1, d2, k=2)
 
@@ -282,10 +300,38 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
         log_message(job_id, f'Canvas created: {new_w}x{new_h} (scale: {canvas_scale}x)')
         processing_jobs[job_id]['progress'] = 20
 
+        # Extract advanced parameters
+        use_flann = params.get('use_flann', True)
+        max_features = params.get('max_features', 5000)
+        downsample_matching = params.get('downsample_matching', True)
+        downsample_scale = params.get('downsample_scale', 0.5)
+        use_parallel = params.get('use_parallel', True)
+        max_workers = params.get('max_workers', None)
+
+        # Create SIFT detector with dynamic max_features
+        log_message(job_id, f'Initializing SIFT detector (max_features={max_features})')
+        sift_detector = cv.SIFT_create(
+            nfeatures=max_features,
+            nOctaveLayers=5,
+            contrastThreshold=0.03,
+            edgeThreshold=15
+        )
+
+        # Create matcher based on use_flann parameter
+        if use_flann:
+            log_message(job_id, 'Using FLANN matcher (fast mode)')
+            FLANN_INDEX_KDTREE = 1
+            index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+            search_params = dict(checks=50)
+            matcher = cv.FlannBasedMatcher(index_params, search_params)
+        else:
+            log_message(job_id, 'Using BFMatcher (accurate mode)')
+            matcher = cv.BFMatcher()
+
         # Compute base SIFT features
         log_message(job_id, 'Computing SIFT features for overview image')
         base_gray = cv.cvtColor(base, cv.COLOR_BGR2GRAY)
-        k1, d1 = sift.detectAndCompute(base_gray, None)
+        k1, d1 = sift_detector.detectAndCompute(base_gray, None)
 
         if d1 is None or len(k1) == 0:
             raise Exception('Failed to compute SIFT features from overview image')
@@ -308,7 +354,11 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
         sift_params = {
             'min_matches': params.get('sift_min_matches', 12),
             'ratio_test': params.get('sift_ratio_test', 0.75),
-            'ransac_threshold': params.get('ransac_threshold', 3.0)
+            'ransac_threshold': params.get('ransac_threshold', 3.0),
+            'downsample_matching': downsample_matching,
+            'downsample_scale': downsample_scale,
+            'sift_detector': sift_detector,
+            'matcher': matcher
         }
 
         for idx, path in enumerate(sorted(closeup_paths)):
@@ -322,7 +372,7 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
                 continue
 
             # Compute homography
-            H = homography_sift(img, k1, d1, job_id, sift_params)
+            H = homography_sift(img, k1, d1, job_id, sift_params, scale1=1.0)
 
             if H is None:
                 log_message(job_id, f'Skipped (homography failed): {filename}')

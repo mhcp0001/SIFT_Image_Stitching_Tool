@@ -120,6 +120,60 @@
                                 </label>
                                 <input type="range" id="sift-matches" min="8" max="30" value="12" step="1" class="w-full">
                             </div>
+
+                            <!-- 高速化パラメータ（折りたたみ式） -->
+                            <div class="mt-4 border-t pt-4">
+                                <button type="button" id="advanced-toggle" class="flex items-center justify-between w-full text-left text-sm font-medium text-gray-700 hover:text-blue-600 transition">
+                                    <span>⚡ 高速化設定（詳細）</span>
+                                    <svg id="advanced-icon" class="w-5 h-5 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </button>
+                                <div id="advanced-params" class="hidden mt-4 space-y-4 pl-2 border-l-2 border-blue-200">
+                                    <div>
+                                        <label class="flex items-center space-x-2">
+                                            <input type="checkbox" id="use-flann" checked class="rounded">
+                                            <span class="text-sm text-gray-700">FLANNマッチャーを使用（2-5倍高速）</span>
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                                            最大特徴点数
+                                            <span class="text-gray-500 font-normal">- 現在: <span id="max-features-value">5000</span></span>
+                                        </label>
+                                        <input type="range" id="max-features" min="1000" max="10000" value="5000" step="500" class="w-full">
+                                        <p class="text-xs text-gray-500 mt-1">少ないほど高速だがマッチング精度が下がる可能性</p>
+                                    </div>
+                                    <div>
+                                        <label class="flex items-center space-x-2">
+                                            <input type="checkbox" id="downsample-matching" checked class="rounded">
+                                            <span class="text-sm text-gray-700">マッチング時にダウンサンプリング</span>
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                                            ダウンサンプリング倍率
+                                            <span class="text-gray-500 font-normal">- 現在: <span id="downsample-scale-value">0.5</span></span>
+                                        </label>
+                                        <input type="range" id="downsample-scale" min="0.3" max="1.0" value="0.5" step="0.1" class="w-full">
+                                        <p class="text-xs text-gray-500 mt-1">小さいほど高速だがマッチング精度が下がる可能性</p>
+                                    </div>
+                                    <div>
+                                        <label class="flex items-center space-x-2">
+                                            <input type="checkbox" id="use-parallel" checked class="rounded">
+                                            <span class="text-sm text-gray-700">並列処理を使用（マルチコア活用）</span>
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">
+                                            並列ワーカー数
+                                            <span class="text-gray-500 font-normal">- 現在: <span id="max-workers-value">auto</span></span>
+                                        </label>
+                                        <input type="number" id="max-workers" min="1" max="16" value="" placeholder="auto (CPU数)" class="w-full border rounded px-3 py-2">
+                                        <p class="text-xs text-gray-500 mt-1">空欄でCPU数に自動設定</p>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
