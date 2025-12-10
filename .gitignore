@@ -209,6 +209,10 @@ __marimo__/
 # medias
 img/
 
+# Web UI uploads and results
+uploads/
+results/
+
 # Claude Code, MCP
 .claude/
 .serena/
