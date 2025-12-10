@@ -31,6 +31,7 @@ const siftMatches = document.getElementById('sift-matches');
 const siftMatchesValue = document.getElementById('sift-matches-value');
 
 const startBtn = document.getElementById('start-btn');
+const cancelBtn = document.getElementById('cancel-btn');
 const progressPanel = document.getElementById('progress-panel');
 const progressBar = document.getElementById('progress-bar');
 const progressPercent = document.getElementById('progress-percent');
@@ -236,6 +237,7 @@ function streamProgress(jobId) {
                 updateProgress(100);
                 updateStatus('completed', '完了');
                 handleCompletion(data.data);
+                cancelBtn.classList.add('hidden');
                 eventSource.close();
                 break;
 
@@ -244,6 +246,7 @@ function streamProgress(jobId) {
                 addLog(`エラー: ${data.data.error}`);
                 eventSource.close();
                 startBtn.disabled = false;
+                cancelBtn.classList.add('hidden');
                 break;
         }
     };
@@ -264,6 +267,27 @@ function handleCompletion(stats) {
     resultsPanel.classList.remove('hidden');
     startBtn.disabled = false;
     startBtn.textContent = '再度合成';
+    cancelBtn.classList.add('hidden');
+}
+
+// Cancel Process
+function cancelProcess() {
+    addLog('処理を中断しました');
+
+    // Close EventSource if active
+    if (state.eventSource) {
+        state.eventSource.close();
+        state.eventSource = null;
+    }
+
+    // Reset UI
+    updateStatus('failed', '中断');
+    startBtn.disabled = false;
+    startBtn.textContent = '合成を開始';
+    cancelBtn.classList.add('hidden');
+
+    // Clear job ID
+    state.jobId = null;
 }
 
 // Main Process
@@ -271,6 +295,7 @@ async function processStitching() {
     try {
         startBtn.disabled = true;
         startBtn.textContent = '処理中...';
+        cancelBtn.classList.remove('hidden');
 
         progressPanel.classList.remove('hidden');
         resultsPanel.classList.add('hidden');
@@ -306,6 +331,7 @@ async function processStitching() {
         updateStatus('failed', 'エラー');
         startBtn.disabled = false;
         startBtn.textContent = '合成を開始';
+        cancelBtn.classList.add('hidden');
     }
 }
 
@@ -335,6 +361,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Start Button
     startBtn.addEventListener('click', processStitching);
+
+    // Cancel Button
+    cancelBtn.addEventListener('click', cancelProcess);
 
     // Initialize Drop Zones
     setupDropZone(overviewDropZone, overviewInput, (files) => {
