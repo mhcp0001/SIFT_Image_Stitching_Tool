@@ -1,0 +1,12 @@
+# SIFT Image Stitching Tool - Python Dependencies
+
+# Core image processing
+opencv-contrib-python>=4.8.0
+numpy>=1.24.0
+
+# Web API
+Flask>=3.0.0
+Flask-CORS>=4.0.0
+
+# Optional: Analysis tools
+scikit-image>=0.21.0

@@ -216,3 +216,8 @@ results/
 # Claude Code, MCP
 .claude/
 .serena/
+
+# Portable version
+portable/python_embed/
+portable/uploads/
+portable/results/

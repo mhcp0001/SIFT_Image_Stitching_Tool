@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIFT Image Stitching Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .drop-zone {
+            border: 2px dashed #cbd5e0;
+            transition: all 0.3s ease;
+        }
+        .drop-zone.drag-over {
+            border-color: #4299e1;
+            background-color: #ebf8ff;
+        }
+        .preview-image {
+            max-width: 150px;
+            max-height: 150px;
+            object-fit: cover;
+        }
+        .log-container {
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+        }
+        .progress-bar {
+            transition: width 0.3s ease;
+        }
+        .status-badge {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen py-8 px-4">
+        <div class="max-w-6xl mx-auto">
+            <!-- Header -->
+            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                <h1 class="text-3xl font-bold text-gray-800 mb-2">SIFT Image Stitching Tool</h1>
+                <p class="text-gray-600">高解像度クローズアップ画像を広角画像に合成するツール</p>
+            </div>
+
+            <!-- Main Content -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- Left Panel: Upload & Settings -->
+                <div class="space-y-6">
+                    <!-- Step 1: Overview Image -->
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-4">
+                            <span class="bg-blue-500 text-white rounded-full w-8 h-8 inline-flex items-center justify-center mr-2">1</span>
+                            広角画像（Overview）
+                        </h2>
+                        <div id="overview-drop-zone" class="drop-zone rounded-lg p-8 text-center cursor-pointer">
+                            <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                                <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            <p class="mt-2 text-sm text-gray-600">クリックまたはドラッグ&ドロップで画像を選択</p>
+                            <input type="file" id="overview-input" accept="image/jpeg,image/png,image/jpg" class="hidden">
+                        </div>
+                        <div id="overview-preview" class="mt-4 hidden">
+                            <img id="overview-preview-img" class="preview-image mx-auto rounded border">
+                            <p id="overview-filename" class="text-sm text-gray-600 text-center mt-2"></p>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: Closeup Images -->
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-4">
+                            <span class="bg-blue-500 text-white rounded-full w-8 h-8 inline-flex items-center justify-center mr-2">2</span>
+                            クローズアップ画像群（Closeups）
+                        </h2>
+                        <div id="closeups-drop-zone" class="drop-zone rounded-lg p-8 text-center cursor-pointer">
+                            <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                                <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            <p class="mt-2 text-sm text-gray-600">複数の画像を選択できます</p>
+                            <input type="file" id="closeups-input" accept="image/jpeg,image/png,image/jpg" multiple class="hidden">
+                        </div>
+                        <div id="closeups-preview" class="mt-4 hidden">
+                            <p class="text-sm text-gray-600 mb-2"><span id="closeup-count">0</span> 枚の画像が選択されています</p>
+                            <div id="closeups-preview-grid" class="grid grid-cols-4 gap-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Parameters -->
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-4">
+                            <span class="bg-blue-500 text-white rounded-full w-8 h-8 inline-flex items-center justify-center mr-2">3</span>
+                            パラメータ調整（オプション）
+                        </h2>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                    Canvas Scale (出力倍率)
+                                    <span class="text-gray-500 font-normal">- 現在: <span id="canvas-scale-value">2</span>x</span>
+                                </label>
+                                <input type="range" id="canvas-scale" min="1" max="5" value="2" step="1" class="w-full">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                    Blend Strength (ブレンド強度)
+                                    <span class="text-gray-500 font-normal">- 現在: <span id="strength-value">31</span></span>
+                                </label>
+                                <input type="range" id="strength" min="11" max="71" value="31" step="2" class="w-full">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">
+                                    SIFT Min Matches
+                                    <span class="text-gray-500 font-normal">- 現在: <span id="sift-matches-value">12</span></span>
+                                </label>
+                                <input type="range" id="sift-matches" min="8" max="30" value="12" step="1" class="w-full">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Start Button -->
+                    <button id="start-btn" disabled class="w-full bg-blue-500 text-white py-3 px-6 rounded-lg font-semibold hover:bg-blue-600 transition disabled:bg-gray-300 disabled:cursor-not-allowed">
+                        合成を開始
+                    </button>
+                </div>
+
+                <!-- Right Panel: Progress & Results -->
+                <div class="space-y-6">
+                    <!-- Progress -->
+                    <div id="progress-panel" class="bg-white rounded-lg shadow-md p-6 hidden">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-4">処理状況</h2>
+
+                        <div class="mb-4">
+                            <div class="flex justify-between mb-2">
+                                <span class="text-sm font-medium text-gray-700">進捗</span>
+                                <span class="text-sm font-medium text-gray-700"><span id="progress-percent">0</span>%</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                <div id="progress-bar" class="progress-bar bg-blue-500 h-2.5 rounded-full" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div class="mb-4 flex items-center justify-between">
+                            <span id="status-badge" class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
+                                待機中
+                            </span>
+                            <button id="cancel-btn" class="hidden bg-red-500 text-white py-2 px-4 rounded-lg font-semibold hover:bg-red-600 transition text-sm">
+                                処理を中断
+                            </button>
+                        </div>
+
+                        <div>
+                            <h3 class="text-sm font-semibold text-gray-700 mb-2">処理ログ</h3>
+                            <div id="log-container" class="log-container bg-gray-900 text-green-400 p-3 rounded"></div>
+                        </div>
+                    </div>
+
+                    <!-- Results -->
+                    <div id="results-panel" class="bg-white rounded-lg shadow-md p-6 hidden">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-4">合成結果</h2>
+
+                        <div id="stats" class="mb-4 grid grid-cols-3 gap-4">
+                            <div class="text-center">
+                                <p class="text-2xl font-bold text-green-600"><span id="stat-success">0</span></p>
+                                <p class="text-xs text-gray-600">成功</p>
+                            </div>
+                            <div class="text-center">
+                                <p class="text-2xl font-bold text-yellow-600"><span id="stat-skip">0</span></p>
+                                <p class="text-xs text-gray-600">スキップ</p>
+                            </div>
+                            <div class="text-center">
+                                <p class="text-2xl font-bold text-blue-600"><span id="stat-total">0</span></p>
+                                <p class="text-xs text-gray-600">合計</p>
+                            </div>
+                        </div>
+
+                        <div class="border rounded-lg overflow-hidden mb-4">
+                            <img id="result-image" src="" alt="Result" class="w-full">
+                        </div>
+
+                        <button id="download-btn" class="w-full bg-green-500 text-white py-2 px-4 rounded-lg font-semibold hover:bg-green-600 transition">
+                            結果をダウンロード
+                        </button>
+                    </div>
+
+                    <!-- Info Panel -->
+                    <div class="bg-blue-50 rounded-lg p-6 border border-blue-200">
+                        <h3 class="text-lg font-semibold text-blue-900 mb-2">使い方</h3>
+                        <ol class="text-sm text-blue-800 space-y-1 list-decimal list-inside">
+                            <li>広角画像（Overview）を1枚選択</li>
+                            <li>クローズアップ画像を複数選択</li>
+                            <li>必要に応じてパラメータを調整</li>
+                            <li>「合成を開始」ボタンをクリック</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
