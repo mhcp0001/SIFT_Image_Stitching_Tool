@@ -25,7 +25,9 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '..', 'uploads')
 RESULTS_FOLDER = os.path.join(os.path.dirname(__file__), '..', 'results')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
-app = Flask(__name__)
+app = Flask(__name__,
+            static_folder=os.path.join(os.path.dirname(__file__), '..', 'web'),
+            static_url_path='')
 CORS(app)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['RESULTS_FOLDER'] = RESULTS_FOLDER

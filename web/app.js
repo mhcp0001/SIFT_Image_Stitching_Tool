@@ -309,43 +309,48 @@ async function processStitching() {
     }
 }
 
-// Download Handler
-downloadBtn.addEventListener('click', () => {
-    if (state.jobId) {
-        window.location.href = `${API_BASE}/api/download/${state.jobId}`;
-    }
+// Initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('Initializing SIFT Image Stitching Tool...');
+
+    // Download Handler
+    downloadBtn.addEventListener('click', () => {
+        if (state.jobId) {
+            window.location.href = `${API_BASE}/api/download/${state.jobId}`;
+        }
+    });
+
+    // Parameter Sliders
+    canvasScale.addEventListener('input', (e) => {
+        canvasScaleValue.textContent = e.target.value;
+    });
+
+    strength.addEventListener('input', (e) => {
+        strengthValue.textContent = e.target.value;
+    });
+
+    siftMatches.addEventListener('input', (e) => {
+        siftMatchesValue.textContent = e.target.value;
+    });
+
+    // Start Button
+    startBtn.addEventListener('click', processStitching);
+
+    // Initialize Drop Zones
+    setupDropZone(overviewDropZone, overviewInput, (files) => {
+        if (files[0]) handleOverviewFile(files[0]);
+    });
+
+    setupDropZone(closeupsDropZone, closeupsInput, (files) => {
+        handleCloseupFiles(files);
+    });
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+        if (state.eventSource) {
+            state.eventSource.close();
+        }
+    });
+
+    console.log('SIFT Image Stitching Tool initialized successfully!');
 });
-
-// Parameter Sliders
-canvasScale.addEventListener('input', (e) => {
-    canvasScaleValue.textContent = e.target.value;
-});
-
-strength.addEventListener('input', (e) => {
-    strengthValue.textContent = e.target.value;
-});
-
-siftMatches.addEventListener('input', (e) => {
-    siftMatchesValue.textContent = e.target.value;
-});
-
-// Start Button
-startBtn.addEventListener('click', processStitching);
-
-// Initialize
-setupDropZone(overviewDropZone, overviewInput, (files) => {
-    if (files[0]) handleOverviewFile(files[0]);
-});
-
-setupDropZone(closeupsDropZone, closeupsInput, (files) => {
-    handleCloseupFiles(files);
-});
-
-// Cleanup on page unload
-window.addEventListener('beforeunload', () => {
-    if (state.eventSource) {
-        state.eventSource.close();
-    }
-});
-
-console.log('SIFT Image Stitching Tool initialized');
