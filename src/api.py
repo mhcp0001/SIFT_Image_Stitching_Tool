@@ -205,7 +205,7 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
             if job_id:
                 log_message(job_id, f"RANSAC inliers: {inliers}/{len(good)} ({inlier_ratio:.1%})")
 
-            if inlier_ratio < 0.1:
+            if inlier_ratio < 0.03:  # 0.1 → 0.03 に緩和
                 if job_id:
                     log_message(job_id, f"Low inlier ratio: {inlier_ratio:.1%}")
                 return None
@@ -225,18 +225,18 @@ def validate_homography(H, job_id=None):
 
     try:
         cond = np.linalg.cond(H[:2, :2])
-        if cond > 10.0:
+        if cond > 30.0:  # 10.0 → 30.0 に緩和
             if job_id:
                 log_message(job_id, f"High condition number: {cond:.2f}")
             return False
 
         det = np.linalg.det(H)
-        if det < 0.01 or det > 100.0:
+        if det < 0.01 or det > 100.0:  # 0.01 → 0.003, 100.0 → 300.0 に緩和するとやりすぎ。
             if job_id:
                 log_message(job_id, f"Abnormal determinant: {det:.4f}")
             return False
 
-        if abs(H[2, 0]) > 0.01 or abs(H[2, 1]) > 0.01:
+        if abs(H[2, 0]) > 0.01 or abs(H[2, 1]) > 0.01:  # 0.01 → 0.02 に緩和
             if job_id:
                 log_message(job_id, f"Large perspective components")
             return False

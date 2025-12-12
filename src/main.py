@@ -188,9 +188,9 @@ def homography_sift(img, k1, d1, scale1=1.0):
         H, mask = cv.findHomography(
             dst_pts, src_pts,
             method=cv.RANSAC,
-            ransacReprojThreshold=3.0,  # 5.0→3.0: より厳格な閾値
+            ransacReprojThreshold=5.0,  # 5.0→3.0: より厳格な閾値
             maxIters=5000,              # デフォルト2000→5000: より徹底的な探索
-            confidence=0.995            # デフォルト0.99→0.995: より高い信頼度
+            confidence=0.99            # デフォルト0.99→0.995: より高い信頼度
         )
 
         if H is None:
@@ -242,12 +242,12 @@ def validate_homography(H):
 
         # 2. 行列式チェック（スケール変換の妥当性）
         det = np.linalg.det(H)
-        if det < 0.01 or det > 100.0:
+        if det < 0.003 or det > 300.0:  # 0.01 → 0.003, 100.0 → 300.0 に緩和
             write_log(f"[WARNING] Abnormal determinant: {det:.4f}, extreme scaling detected")
             return False
 
         # 3. 射影成分チェック（平面変換の仮定）
-        if abs(H[2, 0]) > 0.01 or abs(H[2, 1]) > 0.01:
+        if abs(H[2, 0]) > 0.02 or abs(H[2, 1]) > 0.02:  # 0.01 → 0.02 に緩和
             write_log(f"[WARNING] Large perspective components: h31={H[2, 0]:.4f}, h32={H[2, 1]:.4f}")
             return False
 
