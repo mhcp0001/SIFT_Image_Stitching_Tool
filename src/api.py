@@ -113,6 +113,13 @@ def log_message(job_id, message):
         })
 
 
+def increment_skip_reason(job_id, reason):
+    """Increment skip reason counter for a job."""
+    if job_id in processing_jobs:
+        reasons = processing_jobs[job_id].setdefault('skip_reasons', {})
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+
 def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
     """
     Compute homography using SIFT features
@@ -151,7 +158,9 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
 
         if d2 is None or len(d2) < params['min_matches']:
             if job_id:
-                log_message(job_id, f"Not enough features: {len(d2) if d2 is not None else 0}")
+                found = len(d2) if d2 is not None else 0
+                log_message(job_id, f"[REJECT features] found={found}, required>={params['min_matches']}")
+                increment_skip_reason(job_id, 'features')
             return None
 
         # マッチング（FLANN または BFMatcher）
@@ -171,7 +180,8 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
 
         if len(good) < params['min_matches']:
             if job_id:
-                log_message(job_id, f"Not enough good matches: {len(good)}/{params['min_matches']}")
+                log_message(job_id, f"[REJECT matches] good={len(good)}, required>={params['min_matches']}, ratio_test={params['ratio_test']}")
+                increment_skip_reason(job_id, 'matches')
             return None
 
         if job_id:
@@ -197,24 +207,29 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
         )
 
         if H is None:
+            if job_id:
+                log_message(job_id, f"[REJECT homography_none] findHomography returned None (good={len(good)})")
+                increment_skip_reason(job_id, 'homography_none')
             return None
 
         if mask is not None:
-            inliers = np.sum(mask)
+            inliers = int(np.sum(mask))
             inlier_ratio = inliers / len(good)
             if job_id:
                 log_message(job_id, f"RANSAC inliers: {inliers}/{len(good)} ({inlier_ratio:.1%})")
 
             if inlier_ratio < 0.03:  # 0.1 → 0.03 に緩和
                 if job_id:
-                    log_message(job_id, f"Low inlier ratio: {inlier_ratio:.1%}")
+                    log_message(job_id, f"[REJECT inlier_ratio] ratio={inlier_ratio:.1%}, threshold>=3.0%, inliers={inliers}/{len(good)}")
+                    increment_skip_reason(job_id, 'inlier_ratio')
                 return None
 
         return H
 
     except Exception as e:
         if job_id:
-            log_message(job_id, f"Error in homography_sift: {e}")
+            log_message(job_id, f"[REJECT exception] Error in homography_sift: {e}")
+            increment_skip_reason(job_id, 'exception')
         return None
 
 
@@ -225,27 +240,37 @@ def validate_homography(H, job_id=None):
 
     try:
         cond = np.linalg.cond(H[:2, :2])
+        det = np.linalg.det(H)
+        h31 = float(H[2, 0])
+        h32 = float(H[2, 1])
+
+        if job_id:
+            log_message(job_id, f"[VALIDATE] cond={cond:.2f}, det={det:.4f}, h31={h31:.5f}, h32={h32:.5f}")
+
         if cond > 30.0:  # 10.0 → 30.0 に緩和
             if job_id:
-                log_message(job_id, f"High condition number: {cond:.2f}")
+                log_message(job_id, f"[REJECT condition_number] cond={cond:.2f}, threshold<=30.0")
+                increment_skip_reason(job_id, 'condition_number')
             return False
 
-        det = np.linalg.det(H)
         if det < 0.01 or det > 100.0:  # 0.01 → 0.003, 100.0 → 300.0 に緩和するとやりすぎ。
             if job_id:
-                log_message(job_id, f"Abnormal determinant: {det:.4f}")
+                log_message(job_id, f"[REJECT determinant] det={det:.4f}, range=[0.01, 100.0]")
+                increment_skip_reason(job_id, 'determinant')
             return False
 
-        if abs(H[2, 0]) > 0.01 or abs(H[2, 1]) > 0.01:  # 0.01 → 0.02 に緩和
+        if abs(h31) > 0.01 or abs(h32) > 0.01:  # 0.01 → 0.02 に緩和
             if job_id:
-                log_message(job_id, f"Large perspective components")
+                log_message(job_id, f"[REJECT perspective] h31={h31:.5f}, h32={h32:.5f}, threshold<=0.01")
+                increment_skip_reason(job_id, 'perspective')
             return False
 
         return True
 
     except Exception as e:
         if job_id:
-            log_message(job_id, f"Error validating homography: {e}")
+            log_message(job_id, f"[REJECT validate_exception] Error: {e}")
+            increment_skip_reason(job_id, 'validate_exception')
         return False
 
 
@@ -367,7 +392,8 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
 
             img = cv.imread(path)
             if img is None:
-                log_message(job_id, f'Failed to read: {filename}')
+                log_message(job_id, f'[REJECT read_failed] {filename}')
+                increment_skip_reason(job_id, 'read_failed')
                 skip_count += 1
                 continue
 
@@ -393,7 +419,8 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
                 log_message(job_id, f'Blended: {filename}')
                 success_count += 1
             except Exception as e:
-                log_message(job_id, f'Error blending {filename}: {e}')
+                log_message(job_id, f'[REJECT blend_error] {filename}: {e}')
+                increment_skip_reason(job_id, 'blend_error')
                 skip_count += 1
 
             # Update progress
@@ -408,13 +435,21 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
         log_message(job_id, f'Result saved: {result_path}')
         log_message(job_id, f'Processing complete - Success: {success_count}, Skipped: {skip_count}')
 
+        skip_reasons = processing_jobs[job_id].get('skip_reasons', {})
+        if skip_reasons:
+            summary = ', '.join(
+                f'{k}={v}' for k, v in sorted(skip_reasons.items(), key=lambda x: -x[1])
+            )
+            log_message(job_id, f'Skip breakdown: {summary}')
+
         processing_jobs[job_id]['status'] = 'completed'
         processing_jobs[job_id]['progress'] = 100
         processing_jobs[job_id]['result_path'] = result_path
         processing_jobs[job_id]['stats'] = {
             'success_count': success_count,
             'skip_count': skip_count,
-            'total_closeups': total_closeups
+            'total_closeups': total_closeups,
+            'skip_reasons': dict(skip_reasons),
         }
 
     except Exception as e:
@@ -477,6 +512,7 @@ def upload_files():
             'overview_path': overview_path,
             'closeup_paths': closeup_paths,
             'logs': [],
+            'skip_reasons': {},
             'created_at': datetime.now().isoformat()
         }
 
