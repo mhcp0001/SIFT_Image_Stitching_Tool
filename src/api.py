@@ -152,7 +152,7 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
         if d2 is None or len(d2) < params['min_matches']:
             if job_id:
                 log_message(job_id, f"Not enough features: {len(d2) if d2 is not None else 0}")
-            return None
+            return None, 'not_enough_features'
 
         # マッチング（FLANN または BFMatcher）
         if matcher is not None:
@@ -172,7 +172,7 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
         if len(good) < params['min_matches']:
             if job_id:
                 log_message(job_id, f"Not enough good matches: {len(good)}/{params['min_matches']}")
-            return None
+            return None, 'not_enough_good_matches'
 
         if job_id:
             log_message(job_id, f"Found {len(good)} good matches")
@@ -197,7 +197,7 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
         )
 
         if H is None:
-            return None
+            return None, 'find_homography_failed'
 
         if mask is not None:
             inliers = np.sum(mask)
@@ -208,45 +208,45 @@ def homography_sift(img, k1, d1, job_id=None, params=None, scale1=1.0):
             if inlier_ratio < 0.03:  # 0.1 → 0.03 に緩和
                 if job_id:
                     log_message(job_id, f"Low inlier ratio: {inlier_ratio:.1%}")
-                return None
+                return None, 'low_inlier_ratio'
 
-        return H
+        return H, None
 
     except Exception as e:
         if job_id:
             log_message(job_id, f"Error in homography_sift: {e}")
-        return None
+        return None, 'homography_exception'
 
 
 def validate_homography(H, job_id=None):
     """Validate homography matrix"""
     if H is None:
-        return False
+        return False, 'homography_none'
 
     try:
         cond = np.linalg.cond(H[:2, :2])
         if cond > 30.0:  # 10.0 → 30.0 に緩和
             if job_id:
                 log_message(job_id, f"High condition number: {cond:.2f}")
-            return False
+            return False, 'high_condition_number'
 
         det = np.linalg.det(H)
         if det < 0.01 or det > 100.0:  # 0.01 → 0.003, 100.0 → 300.0 に緩和するとやりすぎ。
             if job_id:
                 log_message(job_id, f"Abnormal determinant: {det:.4f}")
-            return False
+            return False, 'abnormal_determinant'
 
         if abs(H[2, 0]) > 0.01 or abs(H[2, 1]) > 0.01:  # 0.01 → 0.02 に緩和
             if job_id:
                 log_message(job_id, f"Large perspective components")
-            return False
+            return False, 'large_perspective_components'
 
-        return True
+        return True, None
 
     except Exception as e:
         if job_id:
             log_message(job_id, f"Error validating homography: {e}")
-        return False
+        return False, 'homography_validation_exception'
 
 
 def warp_and_blend(canvas, img, H, strength=31):
@@ -350,6 +350,14 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
         total_closeups = len(closeup_paths)
         success_count = 0
         skip_count = 0
+        skip_reasons = {
+            'read_error': 0,
+            'homography_failed': 0,
+            'invalid_homography': 0,
+            'blend_error': 0
+        }
+        homography_fail_reasons = {}
+        validation_fail_reasons = {}
 
         sift_params = {
             'min_matches': params.get('sift_min_matches', 12),
@@ -369,20 +377,28 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
             if img is None:
                 log_message(job_id, f'Failed to read: {filename}')
                 skip_count += 1
+                skip_reasons['read_error'] += 1
                 continue
 
             # Compute homography
-            H = homography_sift(img, k1, d1, job_id, sift_params, scale1=1.0)
+            H, homography_fail_reason = homography_sift(img, k1, d1, job_id, sift_params, scale1=1.0)
 
             if H is None:
                 log_message(job_id, f'Skipped (homography failed): {filename}')
                 skip_count += 1
+                skip_reasons['homography_failed'] += 1
+                if homography_fail_reason:
+                    homography_fail_reasons[homography_fail_reason] = homography_fail_reasons.get(homography_fail_reason, 0) + 1
                 continue
 
             # Validate homography
-            if not validate_homography(H, job_id):
+            is_valid, validation_fail_reason = validate_homography(H, job_id)
+            if not is_valid:
                 log_message(job_id, f'Skipped (invalid homography): {filename}')
                 skip_count += 1
+                skip_reasons['invalid_homography'] += 1
+                if validation_fail_reason:
+                    validation_fail_reasons[validation_fail_reason] = validation_fail_reasons.get(validation_fail_reason, 0) + 1
                 continue
 
             # Blend
@@ -395,6 +411,7 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
             except Exception as e:
                 log_message(job_id, f'Error blending {filename}: {e}')
                 skip_count += 1
+                skip_reasons['blend_error'] += 1
 
             # Update progress
             progress = 30 + int((idx + 1) / total_closeups * 60)
@@ -407,6 +424,11 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
 
         log_message(job_id, f'Result saved: {result_path}')
         log_message(job_id, f'Processing complete - Success: {success_count}, Skipped: {skip_count}')
+        log_message(job_id, f'Skip reasons: {skip_reasons}')
+        if homography_fail_reasons:
+            log_message(job_id, f'Homography fail details: {homography_fail_reasons}')
+        if validation_fail_reasons:
+            log_message(job_id, f'Validation fail details: {validation_fail_reasons}')
 
         processing_jobs[job_id]['status'] = 'completed'
         processing_jobs[job_id]['progress'] = 100
@@ -414,7 +436,10 @@ def process_stitching(job_id, overview_path, closeup_paths, params):
         processing_jobs[job_id]['stats'] = {
             'success_count': success_count,
             'skip_count': skip_count,
-            'total_closeups': total_closeups
+            'total_closeups': total_closeups,
+            'skip_reasons': skip_reasons,
+            'homography_fail_reasons': homography_fail_reasons,
+            'validation_fail_reasons': validation_fail_reasons
         }
 
     except Exception as e:
