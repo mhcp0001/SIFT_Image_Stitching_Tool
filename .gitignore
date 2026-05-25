@@ -224,3 +224,11 @@ portable/results/
 # PyInstaller
 build/
 dist/
+
+# Node / React web app (web-react)
+node_modules/
+web-react/dist/
+*.local
+.vite/
+# the root-level `lib/` venv rule above also matches web-react/src/lib; re-include it
+!web-react/src/lib/
